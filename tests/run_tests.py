@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Прогон тестовых диалогов из scenarios.yaml.
+
+Запуск:
+    python tests/run_tests.py           # итоговая таблица
+    python tests/run_tests.py -v        # + полная расшифровка каждого диалога
+
+Модель при прогоне намеренно отключена: тесты проверяют сценарий и правила,
+а не формулировки LLM. Иначе они станут недетерминированными и бесполезными.
+"""
+
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from adapters.storage import MemoryStorage
+from core.dialog import QualifierDialog
+from core.models import Lead
+
+GREEN, RED, GREY, BOLD, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[1m", "\033[0m"
+
+
+class OfflineLLM:
+    """Заглушка модели: тесты не ходят в сеть и не тратят деньги."""
+
+    available = False
+    model = "offline"
+
+    def answer(self, *_args, **_kwargs) -> None:
+        return None
+
+
+def run_scenario(scenario: dict, config: dict, verbose: bool) -> tuple[bool, list[str]]:
+    dialog = QualifierDialog(config, OfflineLLM())
+    lead = Lead(dialog_id=uuid.uuid4().hex[:8])
+    sources: list[str] = []
+
+    transcript = [f"{GREY}бот:{RESET} {dialog.start(lead).text.splitlines()[0]} …"]
+
+    for message in scenario["messages"]:
+        reply = dialog.handle(lead, message)
+        sources.append(reply.source)
+        transcript.append(f"{GREY}кандидат:{RESET} {message}")
+        transcript.append(f"{GREY}бот:{RESET} {reply.text.splitlines()[0]}")
+        if reply.finished:
+            break
+
+    if verbose:
+        print("\n".join("   " + line for line in transcript))
+
+    return check(scenario.get("expect", {}), lead, sources)
+
+
+def check(expect: dict, lead: Lead, sources: list[str]) -> tuple[bool, list[str]]:
+    problems: list[str] = []
+
+    if "stage" in expect and lead.stage.value != expect["stage"]:
+        problems.append(f"этап {lead.stage.value!r}, ожидали {expect['stage']!r}")
+
+    if "temperature" in expect and lead.temperature.value != expect["temperature"]:
+        problems.append(f"температура {lead.temperature.value!r}, ожидали {expect['temperature']!r}")
+
+    for key, value in expect.get("answers", {}).items():
+        actual = lead.answers.get(key)
+        if actual != value:
+            problems.append(f"{key}={actual!r}, ожидали {value!r}")
+
+    if "asked" in expect and len(lead.questions_asked) != expect["asked"]:
+        problems.append(f"вопросов кандидата {len(lead.questions_asked)}, ожидали {expect['asked']}")
+
+    for source in expect.get("sources", []):
+        if source not in sources:
+            problems.append(f"нет ответа из источника {source!r} (были: {', '.join(sorted(set(sources)))})")
+
+    if expect.get("flags_not_empty") and not lead.flags:
+        problems.append("ожидали флаг для менеджера, флагов нет")
+
+    return not problems, problems
+
+
+def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+    verbose = "-v" in sys.argv
+    config = yaml.safe_load((ROOT / "clients" / "smena.yaml").read_text(encoding="utf-8"))
+    scenarios = yaml.safe_load((ROOT / "tests" / "scenarios.yaml").read_text(encoding="utf-8"))
+
+    passed = 0
+    print(f"\n{BOLD}Прогон {len(scenarios)} диалогов — клиент «{config['client']['name']}»{RESET}\n")
+
+    for scenario in scenarios:
+        ok, problems = run_scenario(scenario, config, verbose)
+        mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
+        print(f" {mark}  {scenario['name']}")
+        for problem in problems:
+            print(f"      {RED}→ {problem}{RESET}")
+        if verbose:
+            print()
+        passed += ok
+
+    failed = len(scenarios) - passed
+    colour = GREEN if not failed else RED
+    print(f"\n{colour}{passed} из {len(scenarios)} сценариев прошли{RESET}\n")
+    return 0 if not failed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
