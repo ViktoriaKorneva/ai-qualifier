@@ -42,12 +42,18 @@ def run_scenario(scenario: dict, config: dict, verbose: bool) -> tuple[bool, lis
     lead = Lead(dialog_id=uuid.uuid4().hex[:8])
     sources: list[str] = []
 
-    transcript = [f"{GREY}бот:{RESET} {dialog.start(lead).text.splitlines()[0]} …"]
+    asks = [q["ask"] for q in config["questions"]]
+    questions_asked = 0
+
+    first = dialog.start(lead)
+    questions_asked += count_asks(first.text, asks)
+    transcript = [f"{GREY}бот:{RESET} {first.text.splitlines()[0]} …"]
 
     for message in scenario["messages"]:
         reply = dialog.handle(lead, message)
+        questions_asked += count_asks(reply.text, asks)
         sources.append(reply.source)
-        transcript.append(f"{GREY}кандидат:{RESET} {message}")
+        transcript.append(f"{GREY}кандидат:{RESET} {message or '(пусто)'}")
         transcript.append(f"{GREY}бот:{RESET} {reply.text.splitlines()[0]}")
         if reply.finished:
             break
@@ -55,10 +61,15 @@ def run_scenario(scenario: dict, config: dict, verbose: bool) -> tuple[bool, lis
     if verbose:
         print("\n".join("   " + line for line in transcript))
 
-    return check(scenario.get("expect", {}), lead, sources)
+    return check(scenario.get("expect", {}), lead, sources, questions_asked)
 
 
-def check(expect: dict, lead: Lead, sources: list[str]) -> tuple[bool, list[str]]:
+def count_asks(text: str, asks: list[str]) -> int:
+    """Сколько вопросов анкеты бот задал в одном сообщении."""
+    return sum(1 for ask in asks if ask in text)
+
+
+def check(expect: dict, lead: Lead, sources: list[str], questions_asked: int) -> tuple[bool, list[str]]:
     problems: list[str] = []
 
     if "stage" in expect and lead.stage.value != expect["stage"]:
@@ -81,6 +92,19 @@ def check(expect: dict, lead: Lead, sources: list[str]) -> tuple[bool, list[str]
 
     if expect.get("flags_not_empty") and not lead.flags:
         problems.append("ожидали флаг для менеджера, флагов нет")
+
+    if "percent" in expect and lead.profile.percent != expect["percent"]:
+        problems.append(f"заполненность {lead.profile.percent}%, ожидали {expect['percent']}%")
+
+    if "confirmed" in expect and lead.profile.confirmed != expect["confirmed"]:
+        problems.append(f"подтверждение {lead.profile.confirmed}, ожидали {expect['confirmed']}")
+
+    # Главная проверка профайла: бот не должен спрашивать то, что ему уже
+    # сказали. Лишний заданный вопрос анкеты — признак ровно этого.
+    if "max_questions" in expect and questions_asked > expect["max_questions"]:
+        problems.append(
+            f"бот задал {questions_asked} вопросов анкеты, ожидали не больше {expect['max_questions']}"
+        )
 
     return not problems, problems
 

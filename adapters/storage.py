@@ -15,6 +15,7 @@ from core.models import Lead
 FIELDS = [
     "dialog_id", "created_at", "stage", "temperature", "score",
     "name", "age", "phone", "district",
+    "profile_percent", "profile_confirmed",
     "questions_asked", "flags", "reject_reason",
 ]
 

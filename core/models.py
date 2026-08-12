@@ -10,13 +10,16 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from enum import Enum
 
+from core.profile import Profile
+
 
 class Stage(str, Enum):
     """Этап диалога. Значения строковые, чтобы состояние сериализовалось как есть."""
 
     GREETING = "greeting"
-    ASKING = "asking"              # идём по вопросам анкеты
-    REGISTRATION = "registration"  # анкета собрана, ждём подтверждения регистрации
+    ASKING = "asking"              # собираем профайл
+    CONFIRMING = "confirming"      # профайл собран, показали кандидату на проверку
+    REGISTRATION = "registration"  # профайл подтверждён, ждём подтверждения регистрации
     DONE = "done"                  # передан координатору
     REJECTED = "rejected"          # отсеян жёстким правилом
     ESCALATED = "escalated"        # ушёл человеку досрочно
@@ -34,8 +37,7 @@ class Lead:
 
     dialog_id: str
     stage: Stage = Stage.GREETING
-    answers: dict[str, str] = field(default_factory=dict)
-    question_index: int = 0
+    profile: Profile = field(default_factory=Profile)
     temperature: Temperature = Temperature.COLD
     score: int = 0
     flags: list[str] = field(default_factory=list)
@@ -46,9 +48,16 @@ class Lead:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
-    def set(self, key: str, value: str) -> None:
-        self.answers[key] = value
-        self.updated_at = datetime.now()
+    @property
+    def answers(self) -> dict[str, str]:
+        """Собранные поля. Живут в профайле — здесь только удобный доступ."""
+        return self.profile.values
+
+    def set(self, key: str, value: str) -> bool:
+        changed = self.profile.fill(key, value)
+        if changed:
+            self.updated_at = datetime.now()
+        return changed
 
     def schedule_reminder(self, hours: int, now: datetime | None = None) -> None:
         self.reminder_due_at = (now or datetime.now()) + timedelta(hours=hours)
@@ -71,6 +80,8 @@ class Lead:
             "temperature": self.temperature.value,
             "score": self.score,
             **self.answers,
+            "profile_percent": self.profile.percent,
+            "profile_confirmed": "да" if self.profile.confirmed else "нет",
             "questions_asked": "; ".join(self.questions_asked),
             "flags": "; ".join(self.flags),
             "reject_reason": self.reject_reason,
