@@ -244,6 +244,23 @@ def test_nothing_written_to_disk() -> list[str]:
     return problems
 
 
+def test_static_page_served() -> list[str]:
+    api = client()
+    page = api.get("/")
+    problems = []
+    if page.status_code != 200:
+        problems.append(f"страница не отдалась: {page.status_code}")
+        return problems
+    body = page.text
+    for marker in ("demo-banner", "/static/app.js", "/static/styles.css"):
+        if marker not in body:
+            problems.append(f"в странице нет {marker!r}")
+    for asset in ("/static/app.js", "/static/styles.css"):
+        if api.get(asset).status_code != 200:
+            problems.append(f"{asset} не отдаётся")
+    return problems
+
+
 CHECKS = [
     ("Проба состояния отвечает", test_health),
     ("Конфиг объявляет маскировку и плашку", test_config_declares_masking),
@@ -258,6 +275,7 @@ CHECKS = [
     ("Инъекция ничего не заполняет", test_injection_fills_nothing),
     ("Сброс забывает диалог", test_reset_forgets_dialog),
     ("Ни один файл не записан на диск", test_nothing_written_to_disk),
+    ("Страница и статика отдаются", test_static_page_served),
 ]
 
 

@@ -1,0 +1,182 @@
+/* Интерфейс здесь — витрина к агенту, а не товар. Поэтому без сборки,
+   без библиотек и без эффектов: один файл, системные шрифты, две колонки.
+   Задача оформления ровно одна — чтобы на переговорах было видно, что
+   агент понял и что уедет администратору. */
+
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --ink: #16202c;
+  --ink-soft: #5b6b7d;
+  --line: #dfe5ec;
+  --accent: #1f5f9e;
+  --accent-soft: #e8f0f9;
+  --said: #14663f;
+  --said-bg: #e6f4ec;
+  --derived: #8a5a00;
+  --derived-bg: #fdf1dc;
+  --alert: #9a2f2f;
+  --alert-bg: #fbeaea;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(22, 32, 44, .06), 0 8px 24px rgba(22, 32, 44, .05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12171d;
+    --surface: #1a212a;
+    --ink: #e7edf4;
+    --ink-soft: #9fb0c2;
+    --line: #2c3742;
+    --accent: #74b0e8;
+    --accent-soft: #1e2c3a;
+    --said: #7fd3a5;
+    --said-bg: #173024;
+    --derived: #e8bd6d;
+    --derived-bg: #322715;
+    --alert: #f2a1a1;
+    --alert-bg: #33201f;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* Плашка демонстрации. Висит сверху всегда: человек на публичной странице
+   должен видеть предупреждение раньше, чем поле ввода. */
+.demo-banner {
+  padding: 10px 20px;
+  background: var(--derived-bg);
+  color: var(--derived);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 18px 20px 12px;
+  max-width: 1180px; margin: 0 auto;
+}
+.head h1 { margin: 0; font-size: 19px; letter-spacing: -.01em; }
+.head__sub { margin: 2px 0 0; color: var(--ink-soft); font-size: 13.5px; }
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 400px) 1fr;
+  gap: 16px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 4px 20px 28px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+.panel__head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 12px;
+}
+.panel__head h2 { margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); }
+.panel__hint { margin: 6px 0 14px; font-size: 12.5px; color: var(--ink-soft); }
+.panel__foot { margin-top: 14px; }
+
+.chip {
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.chip--hot { background: var(--alert-bg); color: var(--alert); }
+.chip--warm { background: var(--derived-bg); color: var(--derived); }
+.chip--cold { background: var(--accent-soft); color: var(--ink-soft); }
+
+.progress { height: 5px; background: var(--line); border-radius: 999px; overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .25s ease; }
+
+/* Профайл. Каждое значение обязано нести метку источника: без неё догадка
+   в карточке неотличима от того, что человек сказал сам. */
+.profile { margin: 0; display: grid; gap: 2px; }
+.field {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 10px;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+}
+.field:last-child { border-bottom: 0; }
+.field--empty { opacity: .55; }
+.field__label { font-size: 12.5px; color: var(--ink-soft); }
+.field__value { grid-column: 1; font-weight: 600; word-break: break-word; }
+.field__value--empty { font-weight: 400; color: var(--ink-soft); }
+.field__badges { grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.field__note { grid-column: 1 / -1; font-size: 12px; color: var(--derived); }
+
+.badge { padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.badge--said { background: var(--said-bg); color: var(--said); }
+.badge--derived { background: var(--derived-bg); color: var(--derived); }
+.badge--optional { background: transparent; color: var(--ink-soft); font-weight: 500; border: 1px solid var(--line); }
+.badge--masked { background: transparent; color: var(--ink-soft); font-weight: 500; border: 1px dashed var(--line); }
+
+/* Карточка администратора. Флаги здесь обязательны: в прототипе на платформе
+   пометка о вычисленном значении оставалась в профайле и до сводки не доезжала,
+   а лид при этом получал статус «горячий». */
+.handoff {
+  margin-top: 14px; padding: 14px;
+  background: var(--accent-soft); border-radius: var(--radius);
+  font-size: 13.5px;
+}
+.handoff h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-soft); }
+.handoff dl { margin: 0 0 10px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.handoff dt { color: var(--ink-soft); font-size: 12.5px; }
+.handoff dd { margin: 0; font-weight: 600; }
+.handoff ul { margin: 6px 0 0; padding-left: 18px; }
+.handoff li { margin-bottom: 5px; }
+.handoff .flag { color: var(--alert); }
+
+.chat {
+  display: flex; flex-direction: column; gap: 10px;
+  height: min(58vh, 520px); overflow-y: auto; padding-right: 4px;
+}
+.msg { max-width: 82%; padding: 10px 13px; border-radius: 12px; white-space: pre-wrap; }
+.msg--bot { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg--me { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg--system { align-self: center; background: transparent; color: var(--ink-soft); font-size: 12.5px; text-align: center; }
+
+.composer { display: flex; gap: 8px; margin-top: 14px; }
+.composer input {
+  flex: 1; padding: 11px 13px; font: inherit;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.composer input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.button {
+  padding: 10px 14px; font: inherit; font-weight: 600;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+}
+.button:hover { border-color: var(--accent); color: var(--accent); }
+.button:disabled { opacity: .5; cursor: default; }
+.button--primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.button--primary:hover { color: #fff; opacity: .92; }
+.button--ghost { background: transparent; font-weight: 500; font-size: 13.5px; padding: 7px 11px; }
+.button:not(.button--primary):focus-visible,
+.composer input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

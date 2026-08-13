@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>AI-квалификатор — демонстрация</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="demo-banner" id="demo-banner" role="status"></div>
+
+  <header class="head">
+    <div>
+      <h1 id="client-name">AI-квалификатор</h1>
+      <p class="head__sub" id="client-business"></p>
+    </div>
+    <button class="button button--ghost" id="restart" type="button">Начать заново</button>
+  </header>
+
+  <main class="layout">
+    <!-- Левая колонка: что агент понял. Здесь же метка источника значения —
+         ради неё половина этой демонстрации и существует. -->
+    <section class="panel" aria-labelledby="profile-title">
+      <div class="panel__head">
+        <h2 id="profile-title">Что агент понял</h2>
+        <span class="chip" id="stage-chip">диалог не начат</span>
+      </div>
+
+      <div class="progress" aria-hidden="true"><i id="progress-bar"></i></div>
+      <p class="panel__hint" id="progress-text">Обязательные поля: 0 из 0</p>
+
+      <dl class="profile" id="profile"></dl>
+
+      <div class="panel__foot">
+        <button class="button" id="show-handoff" type="button">
+          Показать, что ушло бы администратору
+        </button>
+      </div>
+
+      <div class="handoff" id="handoff" hidden></div>
+    </section>
+
+    <!-- Правая колонка: собственно разговор. -->
+    <section class="panel panel--chat" aria-labelledby="chat-title">
+      <div class="panel__head">
+        <h2 id="chat-title">Диалог</h2>
+        <span class="chip chip--temp" id="temp-chip">—</span>
+      </div>
+
+      <div class="chat" id="chat" aria-live="polite"></div>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="visually-hidden" for="input">Сообщение</label>
+        <input id="input" type="text" maxlength="400" placeholder="Напишите сообщение…" required>
+        <button class="button button--primary" id="send" type="submit">Отправить</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
