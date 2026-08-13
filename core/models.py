@@ -46,6 +46,9 @@ class Lead:
     questions_asked: list[str] = field(default_factory=list)  # что спрашивал сам кандидат
     offer: str = ""                # id подобранной программы из базы знаний
     awaiting: str = ""             # поле, ответ на которое ждём прямо сейчас
+    # История нужна модели, чтобы разговор был разговором, а не набором
+    # реплик. Живёт в памяти сессии и на диск не попадает.
+    history: list[dict] = field(default_factory=list)
     followups: int = 0             # уточняющих вопросов задано на этапе предложения
     applied_rules: set[str] = field(default_factory=set)  # сработавшие составные правила
     reminder_due_at: datetime | None = None

@@ -60,10 +60,40 @@ class LLMClient:
         self.api_key = os.getenv("AI_TEXT_API_KEY", "")
         self.model = os.getenv("AI_TEXT_MODEL", "")
         self.timeout = int(os.getenv("AI_TEXT_TIMEOUT", "30"))
+        # Рассуждающие модели тратят выходной лимит на размышления и могут
+        # вернуть пустой content. Для коротких реплик диалога рассуждения
+        # не нужны — выключаем, если провайдер это понимает.
+        self.no_reasoning = os.getenv("AI_TEXT_NO_REASONING", "") == "1"
 
     @property
     def available(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
+
+    def compose(
+        self,
+        system: str,
+        history: list[dict] | None = None,
+        user_text: str = "",
+        temperature: float = 0.4,
+        max_tokens: int = 700,
+    ) -> str | None:
+        """Сформулировать реплику по готовому системному промту. None — модель молчит.
+
+        Системный промт приходит из конфига клиента: этот файл не знает ни про
+        нишу, ни про роли, ни про порядок разговора. Модель отдаёт только текст —
+        разбирать её вывод кодом нельзя, иначе промт превращается в контракт,
+        и любая правка формулировки ломает разбор.
+        """
+        if not self.available:
+            return None
+
+        messages = [{"role": "system", "content": system}]
+        for item in (history or []):
+            messages.append({"role": item["role"], "content": item["text"]})
+        if user_text:
+            messages.append({"role": "user", "content": user_text})
+
+        return self._call(messages, temperature, max_tokens)
 
     def answer(
         self, question: str, knowledge: str, client_name: str, role_brief: str = ""
@@ -78,20 +108,22 @@ class LLMClient:
             return None
 
         role = ROLE_BLOCK.format(role_brief=role_brief.strip()) if role_brief.strip() else ""
+        system = SYSTEM_PROMPT.format(client=client_name, knowledge=knowledge, role=role)
+        return self._call(
+            [{"role": "system", "content": system}, {"role": "user", "content": question}],
+            temperature=0.3,
+            max_tokens=300,
+        )
+
+    def _call(self, messages: list[dict], temperature: float, max_tokens: int) -> str | None:
         payload = {
             "model": self.model,
-            "temperature": 0.3,
-            "max_tokens": 300,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT.format(
-                        client=client_name, knowledge=knowledge, role=role
-                    ),
-                },
-                {"role": "user", "content": question},
-            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "messages": messages,
         }
+        if self.no_reasoning:
+            payload["reasoning"] = {"enabled": False}
         try:
             response = requests.post(
                 f"{self.base_url}/chat/completions",
@@ -103,8 +135,12 @@ class LLMClient:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            return response.json()["choices"][0]["message"]["content"].strip()
-        except (requests.RequestException, KeyError, ValueError):
+            # content бывает null: модель упёрлась в лимит токенов или ушла
+            # в рассуждения и не выдала текста. Это не ошибка сети, и падать
+            # тут нельзя — вызывающий получит None и покажет заготовку.
+            content = response.json()["choices"][0]["message"].get("content")
+            return content.strip() if content else None
+        except (requests.RequestException, KeyError, ValueError, IndexError, TypeError):
             # Молча падать нельзя, но и ронять диалог из-за модели — тоже:
-            # кандидат получит ответ по правилам, менеджер увидит флаг в логе.
+            # человек получит заготовку из конфига и ничего не заметит.
             return None

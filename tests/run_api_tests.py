@@ -244,6 +244,35 @@ def test_nothing_written_to_disk() -> list[str]:
     return problems
 
 
+def test_promise_filter_rejects_model_reply() -> list[str]:
+    """Обещание результата не проходит, даже если его выдала модель.
+
+    Промт просит модель не обещать, но это просьба. Гарантией может быть
+    только код, и здесь проверяется именно он: модель-заглушка отвечает
+    запрещённой фразой, а человек её не видит.
+    """
+    class PromisingLLM:
+        available = True
+        model = "stub"
+
+        def compose(self, *_args, **_kwargs) -> str:
+            return "Не переживайте, времени достаточно, всё получится!"
+
+        def answer(self, *_args, **_kwargs) -> None:
+            return None
+
+    api = TestClient(create_app("clients/parabola.yaml", llm=PromisingLLM()))
+    session_id = api.post("/api/session").json()["session_id"]
+    body = api.post("/api/message", json={"session_id": session_id, "text": "11 класс"}).json()
+
+    problems = []
+    if "всё получится" in body["reply"].lower():
+        problems.append("обещание модели дошло до человека")
+    if not any("фильтр" in flag for flag in body["state"]["flags"]):
+        problems.append("администратор не получил флаг об отклонённой реплике")
+    return problems
+
+
 def test_static_page_served() -> list[str]:
     api = client()
     page = api.get("/")
@@ -275,6 +304,7 @@ CHECKS = [
     ("Инъекция ничего не заполняет", test_injection_fills_nothing),
     ("Сброс забывает диалог", test_reset_forgets_dialog),
     ("Ни один файл не записан на диск", test_nothing_written_to_disk),
+    ("Фильтр обещаний отклоняет реплику модели", test_promise_filter_rejects_model_reply),
     ("Страница и статика отдаются", test_static_page_served),
 ]
 

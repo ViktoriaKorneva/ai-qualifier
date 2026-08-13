@@ -36,6 +36,13 @@ class QualifierDialog:
         # диалог остаётся прежним: собрали профайл, показали, передали.
         self.proposal = config.get("proposal", {})
         self.computed = config.get("computed", [])
+        # Промт живёт в конфиге клиента. Его наличие и включает режим, в котором
+        # реплики формулирует модель: код по-прежнему решает, ЧТО сказать,
+        # модель — КАК. Нет промта или нет ключа — работают заготовки конфига,
+        # и диалог идёт ровно так же, только суше.
+        self.prompt = config.get("prompt", {})
+        self.prompt_template = self.prompt.get("system", "")
+        self.history_limit = int(self.prompt.get("history_limit", 12))
 
     # ------------------------------------------------------------------ #
     # Точки входа
@@ -49,7 +56,19 @@ class QualifierDialog:
         return Reply(f"{greeting}\n\n{self._ask_next(lead)}")
 
     def handle(self, lead: Lead, text: str, now: datetime | None = None) -> Reply:
-        """Обработать сообщение кандидата."""
+        """Обработать сообщение человека и запомнить обмен репликами.
+
+        История нужна модели, чтобы разговор был разговором. Она живёт в памяти
+        сессии: на диск не пишется и в логи не попадает.
+        """
+        reply = self._handle(lead, text, now)
+        lead.history.append({"role": "user", "text": text})
+        lead.history.append({"role": "assistant", "text": reply.text})
+        if len(lead.history) > self.history_limit * 2:
+            lead.history = lead.history[-self.history_limit * 2:]
+        return reply
+
+    def _handle(self, lead: Lead, text: str, now: datetime | None = None) -> Reply:
         now = now or datetime.now()
         text = text.strip()
         self._ensure_profile(lead)
@@ -103,7 +122,7 @@ class QualifierDialog:
         # потом возвращаемся ровно туда, где прервались.
         if rules.looks_like_question(text):
             answer = self._answer_question(lead, text)
-            return Reply(f"{answer.text}\n\n{self._ask_next(lead)}", source=answer.source)
+            return Reply(self._with_return(lead, answer.text), source=answer.source)
 
         filled, reject = self._absorb(lead, text)
         if reject:
@@ -140,12 +159,24 @@ class QualifierDialog:
         # ключевое — предлагаем, остальное уточняем по ходу. Проверяется раньше
         # полноты профайла, иначе человек, выложивший всё одной репликой,
         # проскочил бы предложение и получил анкету вместо разговора.
-        if self.proposal and not lead.offer and not self._pending(lead, Profile.DISCOVERY):
-            return self._to_proposal(lead, notice)
+        if self._ready_to_propose(lead):
+            return self._to_proposal(lead, notice, user_text=text)
 
         if lead.profile.is_complete():
             return self._to_confirmation(lead, notice)
-        return Reply(self._join(notice, self._ask_next(lead)))
+
+        focus = lead.profile.next_focus(Profile.DISCOVERY) or lead.profile.next_focus()
+        return Reply(self._say(
+            lead,
+            self._join(notice, self._ask_next(lead)),
+            goal=self._goal_text(focus),
+            mandatory=self._mandatory(
+                notice,
+                "Идёт выявление. Задай ровно один вопрос — тот, что указан в «что нужно "
+                "узнать следующим». Ничего не предлагай и цену не называй.",
+            ),
+            user_text=text,
+        ))
 
     def _absorb(self, lead: Lead, text: str, overwrite: bool = False) -> tuple[list[str], Reply | None]:
         """Забрать из реплики всё, что удалось опознать.
@@ -218,7 +249,52 @@ class QualifierDialog:
     # Этап: предложение
     # ------------------------------------------------------------------ #
 
-    def _to_proposal(self, lead: Lead, notice: str = "") -> Reply:
+    def _with_return(self, lead: Lead, answer: str) -> str:
+        """Ответ на вопрос плюс возврат к разговору.
+
+        Когда реплику формулирует модель, возврат уже внутри ответа — ей это
+        предписано указанием. Приклеить сюда ещё и заготовленный вопрос значит
+        задать два вопроса подряд: свой и её.
+        """
+        if self.prompt_template and getattr(self.llm, "available", False):
+            return answer
+        return self._join(answer, self._ask_next(lead))
+
+    def _ready_to_propose(self, lead: Lead) -> bool:
+        """Пора ли предлагать. Порог задаёт конфиг, а не количество ответов.
+
+        Это то место, где решение было неправильным: предложение после класса
+        и предметов читается как «купи» — человек ещё не понял, кто мы и чем
+        поможем. Список `requires` держит порог там, где у агента уже есть
+        что сказать по существу: уровень и цель.
+        """
+        if not self.proposal or lead.offer:
+            return False
+        requires = self.proposal.get("requires")
+        if not requires:
+            return not self._pending(lead, Profile.DISCOVERY)
+        return all(
+            lead.profile.has(key) or key in lead.profile.deferred for key in requires
+        )
+
+    @staticmethod
+    def _mandatory(notice: str, instruction: str, instead: str = "") -> str:
+        """Сработавшее правило идёт первым и обязательно к произнесению.
+
+        `instead` заменяет обычную инструкцию, когда правило само по себе уже
+        делает её работу: честная оценка ситуации — это и есть «показать, что
+        понял», и пересказывать то же ещё раз не нужно.
+        """
+        if not notice:
+            return instruction
+        return (
+            "СНАЧАЛА скажи вот это — своими словами, одним абзацем, ничего "
+            "не смягчая и не обещая результата. Не повторяй формулировку "
+            "дословно и не пересказывай одну и ту же мысль дважды:\n"
+            f"{notice}\n\nПотом: {instead or instruction}"
+        )
+
+    def _to_proposal(self, lead: Lead, notice: str = "", user_text: str = "") -> Reply:
         """Предварительный подбор: что подходит и один уточняющий вопрос.
 
         Две презентации разведены по уроку 17-02: здесь короткий подбор,
@@ -227,25 +303,49 @@ class QualifierDialog:
         ради чего отвечает.
         """
         lead.stage = Stage.PROPOSING
+        # Подобранная программа считается всегда — она нужна администратору
+        # в карточке. Но человеку мы предлагаем не курс, а диагностику:
+        # прайс на третьей реплике даёт отторжение, а не продажу.
         lead.offer = rules.pick_offer(lead.profile.values, self.proposal.get("rules", []))
 
-        parts = [notice] if notice else []
-        parts.append(self._offer_text(lead))
         step = self._proposal_step(lead)
+        fallback = self._join(notice, self._offer_text(lead), step)
+        text = self._say(
+            lead,
+            fallback,
+            goal=self._goal_text(lead.awaiting) if step else "",
+            mandatory=self._mandatory(
+                notice,
+                "Ключевое собрано. СНАЧАЛА одной-двумя фразами верни человеку его "
+                "ситуацию своими словами — что ты понял про класс, предметы, уровень "
+                "и срок. ПОТОМ предложи бесплатную диагностику и скажи, что она ему "
+                "даёт. Программу не описывай и цену не называй — про них не спрашивали. "
+                + ("В конце задай один вопрос по пункту «что нужно узнать следующим»."
+                   if step else "Вопросов не задавай."),
+                instead=(
+                    "коротко предложи бесплатную диагностику как способ проверить "
+                    "цель. Ситуацию отдельно не пересказывай — она уже сказана выше. "
+                    "Программу не описывай и цену не называй. "
+                    + ("В конце задай один вопрос по пункту «что нужно узнать "
+                       "следующим»." if step else "Вопросов не задавай.")
+                ),
+            ),
+            user_text=user_text,
+            topic=self.proposal.get("show_entry", ""),
+        )
         if not step:
-            return self._to_confirmation(lead, "\n\n".join(parts))
-        parts.append(step)
-        return Reply("\n\n".join(part for part in parts if part))
+            return self._to_confirmation(lead, text)
+        return Reply(text)
 
     def _offer_text(self, lead: Lead) -> str:
-        """Текст предложения = вступление из конфига + запись базы знаний.
+        """Заготовка предложения: вступление из конфига плюс запись про диагностику.
 
-        Описание программы пишет заказчик, а не мы: подставляется тот же
-        текст, который лежит в базе, — иначе появятся две версии условий,
-        и рано или поздно они разойдутся.
+        Текст пишет заказчик, а не мы. Описание подобранной программы сюда
+        намеренно не попадает: до вопроса о курсе человеку нужен следующий шаг,
+        а не витрина.
         """
         intro = self.proposal.get("intro", "").format(**self._fill(lead)).strip()
-        body = self.knowledge.by_id(lead.offer) if lead.offer else ""
+        body = self.knowledge.by_id(self.proposal.get("show_entry", ""))
         if not body:
             return intro or self.proposal.get("no_match", "").strip()
         return f"{intro}\n\n{body}".strip()
@@ -273,7 +373,7 @@ class QualifierDialog:
     def _handle_proposing(self, lead: Lead, text: str) -> Reply:
         if rules.looks_like_question(text):
             answer = self._answer_question(lead, text)
-            return Reply(f"{answer.text}\n\n{self._ask_next(lead)}", source=answer.source)
+            return Reply(self._with_return(lead, answer.text), source=answer.source)
 
         # «Давайте запишемся» — человек готов раньше, чем мы закончили уточнять.
         # Продолжать расспросы в этот момент — терять уже готового лида.
@@ -301,7 +401,17 @@ class QualifierDialog:
         step = self._proposal_step(lead)
         if not step:
             return self._to_confirmation(lead, notice)
-        return Reply(self._join(notice, step))
+        return Reply(self._say(
+            lead,
+            self._join(notice, step),
+            goal=self._goal_text(lead.awaiting),
+            mandatory=self._mandatory(
+                notice,
+                "Человек уже видел предложение. Задай один вопрос по пункту «что нужно "
+                "узнать следующим». Заново предлагать диагностику не нужно.",
+            ),
+            user_text=text,
+        ))
 
     # ------------------------------------------------------------------ #
     # Составные правила
@@ -440,6 +550,30 @@ class QualifierDialog:
         lead.questions_asked.append(text)
 
         answer, entry_id = self.knowledge.find(text)
+
+        # Промт клиента задаёт голос и границы — тогда даже готовый ответ базы
+        # проговаривается человеческим языком, а не вставляется цитатой.
+        # Факты при этом остаются ровно те, что написал заказчик.
+        if self.prompt_template and getattr(self.llm, "available", False):
+            # Фокус берём по текущему этапу: на выявлении нельзя возвращать
+            # человека к вопросу о телефоне, до него ещё не дошли.
+            spoken = self._say(
+                lead,
+                answer or "",
+                goal=self._goal_text(self._current_question(lead)["key"]),
+                mandatory=(
+                    "Человек задал вопрос. Ответь на него по справке — коротко и по "
+                    "существу, ничего не добавляя от себя. Если в справке ответа нет, "
+                    "честно скажи, что уточнишь у коллег. Про цену отвечай прямо "
+                    "цифрами, если спросили. Потом верни разговор к тому, что нужно "
+                    "узнать следующим."
+                ),
+                user_text=text,
+                topic=text,
+            )
+            if spoken:
+                return Reply(spoken, source=f"knowledge:{entry_id}" if answer else "llm")
+
         if answer:
             return Reply(answer, source=f"knowledge:{entry_id}")
 
@@ -457,6 +591,90 @@ class QualifierDialog:
     # ------------------------------------------------------------------ #
     # Мелочи
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+    # Речь: код решает, что сказать, модель — как
+    # ------------------------------------------------------------------ #
+
+    def _say(
+        self,
+        lead: Lead,
+        fallback: str,
+        *,
+        goal: str = "",
+        mandatory: str = "",
+        user_text: str = "",
+        topic: str = "",
+    ) -> str:
+        """Реплика от модели поверх заготовки кода. Заготовка — это и есть смысл.
+
+        Модель никогда не решает, что происходит дальше: ей приходит уже
+        принятое решение — какое поле нужно, какое правило сработало, какой
+        раздел базы относится к теме. Если модели нет или она молчит,
+        человек получает заготовку из конфига и разговор не ломается.
+        """
+        if not self.prompt_template or not getattr(self.llm, "available", False):
+            return fallback
+
+        facts, role_brief = self.knowledge.context_for(topic or user_text or goal)
+        stages = self.prompt.get("stages", {})
+        system = self.prompt_template.format(
+            client=self.client_name,
+            business=self.config["client"].get("business", ""),
+            profile=self._profile_text(lead),
+            next_goal=goal or "всё нужное собрано — новых вопросов не задавай",
+            stage=stages.get(lead.stage.value, lead.stage.value),
+            knowledge=f"{role_brief}\n\n{facts}".strip(),
+            mandatory=mandatory or "нет",
+        )
+        text = (self.llm.compose(system, lead.history[-self.history_limit:], user_text) or "").strip()
+        if not text:
+            return fallback
+
+        # Промт — это просьба, а не гарантия: модель обходит запрет мягкими
+        # формулировками вроде «времени достаточно, чтобы многое изменить».
+        # Обещание результата — то, чего этот продукт не делает никогда,
+        # поэтому проверяет его код, а не текст промта.
+        hit = self._forbidden_hit(text)
+        if hit:
+            flag = f"ответ модели отклонён фильтром обещаний: «{hit}»"
+            if flag not in lead.flags:
+                lead.flags.append(flag)
+            return fallback
+        return text
+
+    def _forbidden_hit(self, text: str) -> str:
+        low = text.lower()
+        for phrase in self.prompt.get("forbidden", []):
+            if str(phrase).lower() in low:
+                return str(phrase)
+        return ""
+
+    def _profile_text(self, lead: Lead) -> str:
+        """Состояние профайла словами — так, как его должна видеть модель.
+
+        Посчитанное помечается прямо здесь: модель не должна ссылаться
+        на вычисленное значение как на слова человека.
+        """
+        lines = []
+        for key in lead.profile.order:
+            value = lead.profile.values.get(key)
+            if not value:
+                lines.append(f"- {self._label(key)}: не знаем")
+            elif lead.profile.is_derived(key):
+                lines.append(
+                    f"- {self._label(key)}: {value} "
+                    f"(посчитано нами, человек этого не называл)"
+                )
+            else:
+                lines.append(f"- {self._label(key)}: {value} (сказал сам)")
+        return "\n".join(lines)
+
+    def _goal_text(self, key: str | None) -> str:
+        if not key:
+            return ""
+        question = self._question(key)
+        return f"{self._label(key)}. Пример формулировки: «{question['ask']}»"
 
     def _ensure_profile(self, lead: Lead) -> None:
         """Порядок, обязательность и фазы полей задаёт конфиг клиента, а не код.
@@ -505,7 +723,14 @@ class QualifierDialog:
         if lead.stage is Stage.PROPOSING and lead.awaiting:
             if not lead.profile.has(lead.awaiting):
                 return self._question(lead.awaiting)
-        key = lead.profile.next_focus() or self.questions[-1]["key"]
+
+        # На выявлении спрашиваем только поля выявления. Без этого агент
+        # посреди разговора о предметах просит телефон: контакт формально
+        # обязателен, и без фильтра по фазе он всплывает первым же.
+        key = None
+        if lead.stage is Stage.ASKING:
+            key = lead.profile.next_focus(Profile.DISCOVERY)
+        key = key or lead.profile.next_focus() or self.questions[-1]["key"]
         return self._question(key)
 
     @staticmethod
