@@ -140,10 +140,10 @@ class QualifierDialog:
         filled: list[str] = []
 
         # Сначала сканируем всю реплику: телефон, район, возраст, имя по маркеру.
-        for key, value in rules.scan_fields(text, self.questions).items():
+        for key, parsed in rules.scan_fields(text, self.questions).items():
             if lead.profile.has(key) and not overwrite:
                 continue
-            if lead.set(key, value):
+            if lead.set(key, parsed.value, derived=parsed.derived, note=parsed.note):
                 filled.append(key)
 
         # Потом добираем активное поле сфокусированным разбором: на прямой вопрос
@@ -151,8 +151,10 @@ class QualifierDialog:
         question = self._current_question(lead)
         key = question["key"]
         if key not in filled and (overwrite or not lead.profile.has(key)):
-            value = rules.parse_answer(question["type"], text, question.get("options"))
-            if value is not None and lead.set(key, value):
+            parsed = rules.parse_answer(question["type"], text, question.get("options"))
+            if parsed is not None and lead.set(
+                key, parsed.value, derived=parsed.derived, note=parsed.note
+            ):
                 filled.append(key)
 
         # И наконец одинокое слово-имя. Человек отвечает «Валера» на вопрос
@@ -169,9 +171,13 @@ class QualifierDialog:
 
         # Жёсткие правила проверяем по каждому заполненному полю: возраст мог
         # приехать из общей реплики, а не из ответа на прямой вопрос.
+        # Выведенные значения отсев не запускают — решение остаётся за человеком.
         for key in filled:
             action, message = rules.check_rules(
-                key, lead.profile.values[key], self.config.get("rules", [])
+                key,
+                lead.profile.values[key],
+                self.config.get("rules", []),
+                derived=lead.profile.is_derived(key),
             )
             if action == "reject":
                 lead.stage = Stage.REJECTED
@@ -292,9 +298,11 @@ class QualifierDialog:
         if answer:
             return Reply(answer, source=f"knowledge:{entry_id}")
 
-        generated = self.llm.answer(
-            text, self.knowledge.as_prompt_context(), self.client_name
-        )
+        # В модель уходит не вся база, а раздел, куда попал вопрос, вместе
+        # с ролью этого раздела: про договор и налоги отвечает специалист
+        # по оформлению, а не тот же голос, что задаёт вопросы анкеты.
+        facts, role_brief = self.knowledge.context_for(text)
+        generated = self.llm.answer(text, facts, self.client_name, role_brief)
         if generated:
             return Reply(generated, source="llm")
 

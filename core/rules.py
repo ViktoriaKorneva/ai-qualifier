@@ -2,11 +2,35 @@
 
 Здесь нет ни одного текста и ни одного порога — всё приходит из конфига клиента.
 Код отвечает на вопрос «как разобрать и проверить», конфиг — «что именно».
+
+Разбор различает две вещи, которые раньше были одним: **сказанное** и
+**выведенное**. Кандидат написал «23» — это сказанное. Написал «2003» — возраст
+мы посчитали сами, и посчитали приблизительно: день рождения в этом году мог
+ещё не наступить, значит истина 22 или 23. Такое значение помечается `derived`,
+и жёсткие правила отсева по нему не срабатывают — иначе бот отказывает человеку
+на цифре, которую тот не называл.
+
+Метод из урока 17-02 УИИ: там агент вывел «9 лет» из «третий класс» и записал
+в карточку как данные клиента.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import date
+from typing import NamedTuple
+
+
+class Parsed(NamedTuple):
+    """Разобранное значение поля.
+
+    derived — значение вычислено, а не названо. note — чем именно оно рискованно,
+    текст уходит менеджеру, а не кандидату.
+    """
+
+    value: str
+    derived: bool = False
+    note: str = ""
 
 # Слова, за которыми обычно нет ответа на вопрос, а есть уклонение.
 EVASIVE = ("не скажу", "зачем", "а вам зачем", "секрет", "потом", "не важно", "неважно")
@@ -29,21 +53,24 @@ CORRECTION_MARKERS = (
 )
 
 
-def parse_answer(kind: str, text: str, options: list[str] | None = None) -> str | None:
+def parse_answer(kind: str, text: str, options: list[str] | None = None) -> Parsed | None:
     """Привести ответ к каноничному виду. None означает «не разобрала»."""
     text = text.strip()
     if not text:
         return None
 
-    if kind == "text":
-        return _parse_name(text)
-    if kind == "age":
+    if kind == "age":                       # единственный тип, где бывает вывод
         return _parse_age(text)
-    if kind == "phone":
-        return _parse_phone(text)
-    if kind == "choice":
-        return _parse_choice(text, options or [])
-    return text
+
+    if kind == "text":
+        value = _parse_name(text)
+    elif kind == "phone":
+        value = _parse_phone(text)
+    elif kind == "choice":
+        value = _parse_choice(text, options or [])
+    else:
+        value = text
+    return Parsed(value) if value else None
 
 
 def _parse_name(text: str) -> str | None:
@@ -67,16 +94,38 @@ def _parse_name(text: str) -> str | None:
     return None
 
 
-def _parse_age(text: str) -> str | None:
-    """Возраст. Принимаем «23», «мне 23», «23 года»; отсекаем годы рождения и мусор."""
-    numbers = [int(n) for n in re.findall(r"\d{1,4}", text)]
-    for number in numbers:
+def _parse_age(text: str) -> Parsed | None:
+    """Возраст. Принимаем «23», «мне 23», «23 года»; годы рождения считаем сами."""
+    for raw in re.findall(r"\d{1,4}", text):
+        number = int(raw)
         if 10 <= number <= 99:
-            return str(number)
-        # «2003» — назвали год рождения, а не возраст.
-        if 1900 <= number <= 2020:
-            return str(2026 - number)
+            return Parsed(str(number))
+        if _looks_like_birth_year(number):
+            return _age_from_birth_year(number)
     return None
+
+
+def _looks_like_birth_year(number: int) -> bool:
+    """Похоже ли число на год рождения ныне живущего человека.
+
+    Границы считаем от текущего года, а не от вписанной константы: захардкоженный
+    год тихо начинает врать в новогоднюю ночь, и ни один тест этого не замечает.
+    """
+    return date.today().year - 110 <= number <= date.today().year - 6
+
+
+def _age_from_birth_year(year: int) -> Parsed:
+    """Возраст по году рождения — всегда приблизительный.
+
+    Точный возраст зависит от дня рождения, которого мы не знаем: до него человеку
+    на год меньше. Поэтому значение помечается выведенным, а рядом едет вилка.
+    """
+    upper = date.today().year - year
+    return Parsed(
+        str(upper),
+        derived=True,
+        note=f"возраст вычислен из года рождения {year}: фактически {upper - 1} или {upper}",
+    )
 
 
 def _parse_phone(text: str) -> str | None:
@@ -112,7 +161,7 @@ LONE_NUMBER = re.compile(r"(?<!\d)(\d{2,4})(?!\d)")
 NOT_AGE_CONTEXT = ("опыт", "стаж", "работал", "работала", "проработал", "проработала")
 
 
-def scan_fields(text: str, questions: list[dict]) -> dict[str, str]:
+def scan_fields(text: str, questions: list[dict]) -> dict[str, Parsed]:
     """Вытащить из одной свободной реплики всё, что удалось опознать уверенно.
 
     Это и есть профайлер: человек пишет «Светлана, 23, Заречный, 89001234567»
@@ -123,7 +172,7 @@ def scan_fields(text: str, questions: list[dict]) -> dict[str, str]:
     Что не опознано уверенно — не угадываем: правило урока «не гадай наугад»
     дешевле, чем неверные данные в карточке лида.
     """
-    found: dict[str, str] = {}
+    found: dict[str, Parsed] = {}
     rest = text
     kinds = {q["key"]: q for q in questions}
 
@@ -135,7 +184,7 @@ def scan_fields(text: str, questions: list[dict]) -> dict[str, str]:
         if match:
             value = _parse_phone(match.group(0))
             if value:
-                found[key] = value
+                found[key] = Parsed(value)
                 rest = rest.replace(match.group(0), " ")
 
     # 2. Выбор из списка — сравнение с закрытым перечнем, ошибиться негде.
@@ -144,16 +193,16 @@ def scan_fields(text: str, questions: list[dict]) -> dict[str, str]:
             continue
         value = _parse_choice(rest, question.get("options") or [])
         if value:
-            found[key] = value
+            found[key] = Parsed(value)
             rest = re.sub(value[: max(4, len(value) - 2)], " ", rest, flags=re.IGNORECASE)
 
     # 3. Возраст — сначала по явному маркеру, потом по одинокому числу в остатке.
     for key, question in kinds.items():
         if question["type"] != "age":
             continue
-        value = _scan_age(rest)
-        if value:
-            found[key] = value
+        parsed = _scan_age(rest)
+        if parsed:
+            found[key] = parsed
 
     # 4. Имя — только по явному маркеру. Без него любое слово в свободной
     #    реплике рискует уехать в поле имени («мне 28, живу в центральном»).
@@ -162,26 +211,26 @@ def scan_fields(text: str, questions: list[dict]) -> dict[str, str]:
             continue
         match = NAME_WITH_MARKER.search(text)
         if match and match.group(1).lower() not in NOT_A_NAME:
-            found[key] = match.group(1).capitalize()
+            found[key] = Parsed(match.group(1).capitalize())
 
     return found
 
 
-def _scan_age(rest: str) -> str | None:
+def _scan_age(rest: str) -> Parsed | None:
     low = rest.lower()
     if not any(word in low for word in NOT_AGE_CONTEXT):
         match = AGE_WITH_MARKER.search(rest)
         if match:
             number = int(match.group(1))
             if 10 <= number <= 99:
-                return str(number)
+                return Parsed(str(number))
 
     for raw in LONE_NUMBER.findall(rest):
         number = int(raw)
         if 14 <= number <= 99:
-            return str(number)
-        if 1900 <= number <= 2020:          # назвали год рождения
-            return str(2026 - number)
+            return Parsed(str(number))
+        if _looks_like_birth_year(number):   # назвали год рождения
+            return _age_from_birth_year(number)
     return None
 
 
@@ -210,17 +259,30 @@ def looks_like_correction(text: str) -> bool:
     return any(marker in low for marker in CORRECTION_MARKERS)
 
 
-def check_rules(field_key: str, value: str, rules: list[dict]) -> tuple[str | None, str]:
+def check_rules(
+    field_key: str, value: str, rules: list[dict], derived: bool = False
+) -> tuple[str | None, str]:
     """Проверить жёсткие правила по полю.
 
     Возвращает (action, message): action — reject / flag / None.
+
+    По выведенному значению отказ не выносится никогда. Отсев — необратимое
+    действие: диалог закрыт, кандидат ушёл. Принимать его по цифре, которую
+    посчитали мы, а не назвал человек, нельзя, поэтому reject понижается
+    до флага и решение принимает менеджер.
     """
     for rule in rules:
         if rule["field"] != field_key:
             continue
         if not _condition_met(rule, value):
             continue
-        return rule["action"], rule.get("message", "")
+        action = rule["action"]
+        if derived and action == "reject":
+            return "flag", (
+                f"отсев по полю «{field_key}» не применён: значение {value} выведено, "
+                f"а не названо кандидатом — проверить вручную"
+            )
+        return action, rule.get("message", "")
     return None, ""
 
 

@@ -24,6 +24,8 @@ class Profile:
 
     order: list[str] = field(default_factory=list)   # ключи в порядке по умолчанию
     values: dict[str, str] = field(default_factory=dict)
+    derived: set[str] = field(default_factory=set)   # поля, посчитанные нами, а не названные
+    notes: dict[str, str] = field(default_factory=dict)  # чем именно рискованно выведенное
     deferred: set[str] = field(default_factory=set)  # «отвечу позже»
     attempts: dict[str, int] = field(default_factory=dict)  # сколько раз переспрашивали
     confirmed: bool = False
@@ -32,18 +34,32 @@ class Profile:
     # Заполнение
     # ------------------------------------------------------------------ #
 
-    def fill(self, key: str, value: str) -> bool:
+    def fill(self, key: str, value: str, derived: bool = False, note: str = "") -> bool:
         """Записать значение. True — если что-то реально изменилось.
 
         Изменение сбрасывает подтверждение: профайл, который поправили после
         «всё верно», обязан быть подтверждён заново.
+
+        `derived` означает, что значение вычислено нами, а не названо кандидатом.
+        Такое поле остаётся отмеченным, пока человек не назовёт его сам: как
+        только он поправит возраст словами, отметка снимается.
         """
-        if self.values.get(key) == value:
+        if self.values.get(key) == value and self.is_derived(key) == derived:
             return False
         self.values[key] = value
+        if derived:
+            self.derived.add(key)
+            if note:
+                self.notes[key] = note
+        else:
+            self.derived.discard(key)
+            self.notes.pop(key, None)
         self.deferred.discard(key)
         self.confirmed = False
         return True
+
+    def is_derived(self, key: str) -> bool:
+        return key in self.derived
 
     def defer(self, key: str) -> None:
         """Кандидат уклонился — запоминаем и возвращаемся к полю позже."""
@@ -103,9 +119,19 @@ class Profile:
         return round(self.completed / self.total * 100) if self.total else 0
 
     def state(self) -> dict:
-        """Снимок состояния. Формат из урока: сколько собрано и куда смотрим."""
+        """Снимок состояния. Формат из урока: сколько собрано и куда смотрим.
+
+        `sources` отвечает на вопрос, который иначе задать некому: что кандидат
+        сказал сам, а что мы за него посчитали.
+        """
         return {
             "extracted": {key: self.values.get(key) for key in self.order},
+            "sources": {
+                key: ("выведено" if self.is_derived(key) else "сказано")
+                for key in self.order
+                if self.has(key)
+            },
+            "notes": dict(self.notes),
             "progress": {
                 "completed_fields": self.completed,
                 "total_fields": self.total,

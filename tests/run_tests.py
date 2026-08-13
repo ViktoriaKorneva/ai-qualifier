@@ -47,12 +47,14 @@ def run_scenario(scenario: dict, config: dict, verbose: bool) -> tuple[bool, lis
 
     first = dialog.start(lead)
     questions_asked += count_asks(first.text, asks)
+    said: list[str] = [first.text]
     transcript = [f"{GREY}бот:{RESET} {first.text.splitlines()[0]} …"]
 
     for message in scenario["messages"]:
         reply = dialog.handle(lead, message)
         questions_asked += count_asks(reply.text, asks)
         sources.append(reply.source)
+        said.append(reply.text)
         transcript.append(f"{GREY}кандидат:{RESET} {message or '(пусто)'}")
         transcript.append(f"{GREY}бот:{RESET} {reply.text.splitlines()[0]}")
         if reply.finished:
@@ -61,7 +63,7 @@ def run_scenario(scenario: dict, config: dict, verbose: bool) -> tuple[bool, lis
     if verbose:
         print("\n".join("   " + line for line in transcript))
 
-    return check(scenario.get("expect", {}), lead, sources, questions_asked)
+    return check(scenario.get("expect", {}), lead, sources, questions_asked, said)
 
 
 def count_asks(text: str, asks: list[str]) -> int:
@@ -69,7 +71,13 @@ def count_asks(text: str, asks: list[str]) -> int:
     return sum(1 for ask in asks if ask in text)
 
 
-def check(expect: dict, lead: Lead, sources: list[str], questions_asked: int) -> tuple[bool, list[str]]:
+def check(
+    expect: dict,
+    lead: Lead,
+    sources: list[str],
+    questions_asked: int,
+    said: list[str],
+) -> tuple[bool, list[str]]:
     problems: list[str] = []
 
     if "stage" in expect and lead.stage.value != expect["stage"]:
@@ -98,6 +106,21 @@ def check(expect: dict, lead: Lead, sources: list[str], questions_asked: int) ->
 
     if "confirmed" in expect and lead.profile.confirmed != expect["confirmed"]:
         problems.append(f"подтверждение {lead.profile.confirmed}, ожидали {expect['confirmed']}")
+
+    # Значение, посчитанное нами, не должно выглядеть как названное человеком.
+    for key in expect.get("derived", []):
+        if not lead.profile.is_derived(key):
+            problems.append(f"поле {key!r} не помечено как выведенное, а должно быть")
+
+    for key in expect.get("not_derived", []):
+        if lead.profile.is_derived(key):
+            problems.append(f"поле {key!r} помечено выведенным, хотя кандидат назвал его сам")
+
+    # Бот не имеет права обещать от лица компании то, чего нет в базе знаний.
+    for forbidden in expect.get("never_says", []):
+        hit = next((text for text in said if forbidden.lower() in text.lower()), None)
+        if hit is not None:
+            problems.append(f"бот сказал запрещённое {forbidden!r}: …{hit.strip()[:60]}…")
 
     # Главная проверка профайла: бот не должен спрашивать то, что ему уже
     # сказали. Лишний заданный вопрос анкеты — признак ровно этого.

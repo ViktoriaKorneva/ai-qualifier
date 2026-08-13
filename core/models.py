@@ -53,10 +53,12 @@ class Lead:
         """Собранные поля. Живут в профайле — здесь только удобный доступ."""
         return self.profile.values
 
-    def set(self, key: str, value: str) -> bool:
-        changed = self.profile.fill(key, value)
+    def set(self, key: str, value: str, derived: bool = False, note: str = "") -> bool:
+        changed = self.profile.fill(key, value, derived=derived, note=note)
         if changed:
             self.updated_at = datetime.now()
+            if derived and note and note not in self.flags:
+                self.flags.append(note)
         return changed
 
     def schedule_reminder(self, hours: int, now: datetime | None = None) -> None:
@@ -82,6 +84,9 @@ class Lead:
             **self.answers,
             "profile_percent": self.profile.percent,
             "profile_confirmed": "да" if self.profile.confirmed else "нет",
+            # Менеджер должен видеть, какие поля посчитаны, а не названы:
+            # в выгрузке догадка иначе неотличима от факта.
+            "derived_fields": "; ".join(sorted(self.profile.derived)),
             "questions_asked": "; ".join(self.questions_asked),
             "flags": "; ".join(self.flags),
             "reject_reason": self.reject_reason,

@@ -16,6 +16,9 @@ FIELDS = [
     "dialog_id", "created_at", "stage", "temperature", "score",
     "name", "age", "phone", "district",
     "profile_percent", "profile_confirmed",
+    # Какие поля посчитаны нами, а не названы кандидатом. Без этой колонки
+    # догадка приезжает менеджеру неотличимо от факта.
+    "derived_fields",
     "questions_asked", "flags", "reject_reason",
 ]
 

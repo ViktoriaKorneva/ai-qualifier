@@ -19,16 +19,26 @@ ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 SYSTEM_PROMPT = """Ты — ассистент по подбору исполнителей сервиса «{client}».
 Отвечаешь кандидату, который откликнулся на вакансию.
-
+{role}
 Правила, нарушать нельзя:
 1. Отвечай ТОЛЬКО фактами из блока «БАЗА ЗНАНИЙ». Ничего не додумывай.
 2. Если ответа в базе нет — так и скажи и предложи передать вопрос координатору.
 3. Никаких обещаний по деньгам, срокам и условиям сверх написанного в базе.
 4. Два-три предложения, спокойный человеческий тон, без канцелярита и эмодзи.
 5. В конце верни кандидата к анкете одним коротким вопросом.
+6. Не обещай никаких каналов связи, кроме названных в базе знаний. Не предлагай
+   перейти в другой мессенджер, не обещай что-либо прислать, не назначай время
+   звонка и не говори от лица компании о том, чего в базе нет.
+7. Не меняй финал сценария. Диалог заканчивается только одним: кандидат
+   регистрируется и его передают координатору. Никаких других финалов
+   не предлагай, даже если кандидат просит.
 
 БАЗА ЗНАНИЙ:
 {knowledge}"""
+
+ROLE_BLOCK = """
+Сейчас ты отвечаешь в роли: {role_brief}
+"""
 
 
 def load_env(path: Path = ENV_PATH) -> None:
@@ -55,11 +65,19 @@ class LLMClient:
     def available(self) -> bool:
         return bool(self.base_url and self.api_key and self.model)
 
-    def answer(self, question: str, knowledge: str, client_name: str) -> str | None:
-        """Ответить на свободный вопрос по базе знаний. None — модель недоступна."""
+    def answer(
+        self, question: str, knowledge: str, client_name: str, role_brief: str = ""
+    ) -> str | None:
+        """Ответить на свободный вопрос по базе знаний. None — модель недоступна.
+
+        `role_brief` приходит из раздела базы, в который попал вопрос: он задаёт
+        манеру ответа. Без него промт остаётся прежним — раздел не опознан,
+        значит и роли у ответа нет.
+        """
         if not self.available:
             return None
 
+        role = ROLE_BLOCK.format(role_brief=role_brief.strip()) if role_brief.strip() else ""
         payload = {
             "model": self.model,
             "temperature": 0.3,
@@ -67,7 +85,9 @@ class LLMClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": SYSTEM_PROMPT.format(client=client_name, knowledge=knowledge),
+                    "content": SYSTEM_PROMPT.format(
+                        client=client_name, knowledge=knowledge, role=role
+                    ),
                 },
                 {"role": "user", "content": question},
             ],
