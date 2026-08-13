@@ -1,2 +1,9 @@
 pyyaml>=6.0
 requests>=2.31
+
+# Веб-демо
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Только для прогона tests/run_api_tests.py
+httpx>=0.27
