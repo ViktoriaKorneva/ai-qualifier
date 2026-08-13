@@ -483,7 +483,94 @@ class QualifierDialog:
         if any(word in low for word in self.confirm.get("reject_words", [])):
             return Reply(self.confirm.get("what_to_fix", "Что именно поправить?"))
 
-        return Reply(self.confirm.get("reask", "Что именно поправить?"))
+        # Правила не распознали реплику. Это не значит, что человек написал
+        # ерунду: «формат ещё не решила» — нормальный ответ, которого просто
+        # не было в списке слов. Спрашиваем модель, но решение принимаем сами.
+        return self._confirm_by_meaning(lead, text)
+
+    def _confirm_by_meaning(self, lead: Lead, text: str) -> Reply:
+        """Разобрать смысл реплики на проверке собранного.
+
+        Модель отвечает одним словом из закрытого списка — всё, что не из
+        списка, отбрасывается, и работает прежнее «не поняла». Свободный
+        текст модели здесь не разбирается никогда.
+        """
+        verdict = None
+        if getattr(self.llm, "available", False):
+            verdict = self.llm.classify(
+                "Человеку показали собранные о нём данные и спросили, всё ли верно. "
+                "Определи, что он ответил.\n"
+                "подтверждает — согласен, данные верны, можно передавать;\n"
+                "правит — сообщает другое значение какого-то поля;\n"
+                "не_определился — говорит, что по какому-то пункту ещё не решил "
+                "или решит позже;\n"
+                "другое — что-то ещё.",
+                text,
+                ["подтверждает", "правит", "не_определился", "другое"],
+            )
+
+        if verdict == "подтверждает" and lead.profile.is_complete():
+            lead.profile.confirmed = True
+            return self._finish_form(lead)
+
+        if verdict == "не_определился":
+            return self._handle_undecided(lead, text)
+
+        fallback = self.confirm.get("reask", "Что именно поправить?")
+        return Reply(self._say(
+            lead,
+            fallback,
+            mandatory=(
+                "Человек ответил не «да» и не поправкой. Ответь коротко и по-человечески, "
+                "не повторяя одну и ту же фразу: уточни, что именно поменять, либо "
+                "предложи подтвердить, если менять нечего. Данные заново не перечисляй."
+            ),
+            user_text=text,
+        ))
+
+    def _handle_undecided(self, lead: Lead, text: str) -> Reply:
+        """Человек ещё не решил по какому-то пункту.
+
+        Раньше такого исхода не существовало: поле было либо заполнено, либо
+        не понято. Между ними есть третье — «пока не знаю», и это нормальный
+        ответ, а не сбой. Значение при этом стирается: оставить в карточке
+        решение, от которого человек отказался, хуже пустого поля.
+        """
+        optional = [key for key in lead.profile.order if not lead.profile.is_required(key)]
+        labels = [self._label(key) for key in optional]
+        key = None
+        if optional and getattr(self.llm, "available", False):
+            chosen = self.llm.classify(
+                "Человек говорит, что по одному из пунктов ещё не определился. "
+                "Определи, о каком пункте речь.",
+                text,
+                [label.lower() for label in labels],
+            )
+            if chosen:
+                key = optional[[label.lower() for label in labels].index(chosen)]
+
+        if key:
+            lead.profile.clear(key)
+            lead.profile.defer(key)
+            flag = f"клиент не определился с полем «{self._label(key)}» — обсудить при звонке"
+            if flag not in lead.flags:
+                lead.flags.append(flag)
+
+        fallback = self._join(
+            self.confirm.get("undecided", "Хорошо, обсудим это с администратором."),
+            self._summary(lead, with_intro=False),
+        )
+        return Reply(self._say(
+            lead,
+            fallback,
+            mandatory=(
+                "Человек сказал, что по одному из пунктов ещё не определился. Согласись, "
+                "что решать это сейчас не нужно — администратор обсудит при звонке. "
+                "Не уговаривай и не переспрашивай про этот пункт. Одной фразой спроси, "
+                "верно ли всё остальное. Данные заново не перечисляй."
+            ),
+            user_text=text,
+        ))
 
     def _summary(self, lead: Lead, with_intro: bool = True) -> str:
         """Сводка собранного и вопрос «всё верно?»."""

@@ -273,6 +273,46 @@ def test_promise_filter_rejects_model_reply() -> list[str]:
     return problems
 
 
+def test_undecided_field_is_cleared() -> list[str]:
+    """«Формат ещё не решила» — не сбой, а третий исход поля.
+
+    Значение при этом стирается: оставить в карточке решение, от которого
+    человек отказался, хуже пустого поля — менеджер поедет с чужим выбором.
+    """
+    class UndecidedLLM:
+        available = True
+        model = "stub"
+
+        def compose(self, *_args, **_kwargs) -> str:
+            return "Хорошо, формат обсудим при звонке. Всё остальное верно?"
+
+        def classify(self, _instruction: str, _text: str, options: list[str]) -> str:
+            return "не_определился" if "не_определился" in options else "формат"
+
+        def answer(self, *_args, **_kwargs) -> None:
+            return None
+
+    api = TestClient(create_app("clients/parabola.yaml", llm=UndecidedLLM()))
+    session_id = api.post("/api/session").json()["session_id"]
+    for message in ["10 класс", "математика", "средне", "80", "индивидуально", PHONE_TYPED]:
+        api.post("/api/message", json={"session_id": session_id, "text": message})
+
+    body = api.post("/api/message", json={
+        "session_id": session_id,
+        "text": "формат ещё не решила, подумаю позже",
+    }).json()
+
+    fields = {item["key"]: item for item in body["state"]["profile"]}
+    problems = []
+    if fields["format"]["value"]:
+        problems.append(f"формат остался как {fields['format']['value']!r}, а человек от него отказался")
+    if not any("не определился" in flag for flag in body["state"]["flags"]):
+        problems.append("администратор не получил пометку о нерешённом пункте")
+    if "не поняла" in body["reply"].lower():
+        problems.append("бот ответил заготовкой «не поняла»")
+    return problems
+
+
 def test_static_page_served() -> list[str]:
     api = client()
     page = api.get("/")
@@ -305,6 +345,7 @@ CHECKS = [
     ("Сброс забывает диалог", test_reset_forgets_dialog),
     ("Ни один файл не записан на диск", test_nothing_written_to_disk),
     ("Фильтр обещаний отклоняет реплику модели", test_promise_filter_rejects_model_reply),
+    ("Нерешённый пункт стирается и едет флагом", test_undecided_field_is_cleared),
     ("Страница и статика отдаются", test_static_page_served),
 ]
 

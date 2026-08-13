@@ -71,6 +71,21 @@ class Profile:
     def is_derived(self, key: str) -> bool:
         return key in self.derived
 
+    def clear(self, key: str) -> bool:
+        """Забыть значение поля. True — если было что забывать.
+
+        Нужно, когда человек отказывается от уже сказанного: «формат я ещё
+        не решила». Оставить прежнее значение в карточке хуже, чем пустое
+        поле, — менеджер поедет на встречу с чужим решением.
+        """
+        if key not in self.values:
+            return False
+        self.values.pop(key)
+        self.derived.discard(key)
+        self.notes.pop(key, None)
+        self.confirmed = False
+        return True
+
     def defer(self, key: str) -> None:
         """Кандидат уклонился — запоминаем и возвращаемся к полю позже."""
         if key not in self.values:

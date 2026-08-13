@@ -95,6 +95,32 @@ class LLMClient:
 
         return self._call(messages, temperature, max_tokens)
 
+    def classify(self, instruction: str, user_text: str, options: list[str]) -> str | None:
+        """Отнести реплику к одной из меток. None — модель не помогла.
+
+        Это единственное место, где вывод модели разбирается кодом, и потому
+        он сведён к выбору из закрытого списка: ответ вне списка отбрасывается,
+        и дальше работают правила. Свободный текст парсить нельзя — промт
+        сразу становится контрактом, и правка формулировки ломает разбор.
+        """
+        if not self.available:
+            return None
+
+        system = (
+            f"{instruction}\n\nОтветь РОВНО одним словом из списка, без пояснений "
+            f"и без знаков препинания: {', '.join(options)}."
+        )
+        raw = self._call(
+            [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
+            temperature=0,
+            max_tokens=200,
+        )
+        if not raw:
+            return None
+
+        answer = raw.strip().lower().strip(".!,«»\"'")
+        return answer if answer in options else None
+
     def answer(
         self, question: str, knowledge: str, client_name: str, role_brief: str = ""
     ) -> str | None:
