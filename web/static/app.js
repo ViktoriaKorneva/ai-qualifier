@@ -189,15 +189,18 @@ async function start() {
 async function send(text) {
   addMessage(text, "me");
   setBusy(true);
+  // Признак конца диалога держим отдельной переменной. Спрашивать об этом
+  // сам элемент нельзя: во время запроса он выключен в любом случае, и
+  // «выключен» перестаёт отличать «идёт запрос» от «диалог закончен».
+  let finished = false;
   try {
     const body = await api("/api/message", { session_id: sessionId, text });
     addMessage(body.reply, "bot");
     renderProfile(body.state);
     if (!el("handoff").hidden) await showHandoff();
     if (body.state.finished) {
+      finished = true;
       addMessage("Диалог завершён. Можно начать заново.", "system");
-      el("input").disabled = true;
-      el("send").disabled = true;
     }
   } catch (error) {
     if (error.status === 404) {
@@ -209,8 +212,11 @@ async function send(text) {
       addMessage("Что-то пошло не так. Попробуйте ещё раз.", "system");
     }
   } finally {
-    if (!el("input").disabled) setBusy(false);
-    else busy = false;
+    setBusy(false);
+    if (finished) {
+      el("input").disabled = true;
+      el("send").disabled = true;
+    }
   }
 }
 
