@@ -18,6 +18,7 @@ class Stage(str, Enum):
 
     GREETING = "greeting"
     ASKING = "asking"              # собираем профайл
+    PROPOSING = "proposing"        # ключевое собрано — предлагаем и уточняем на ходу
     CONFIRMING = "confirming"      # профайл собран, показали кандидату на проверку
     REGISTRATION = "registration"  # профайл подтверждён, ждём подтверждения регистрации
     DONE = "done"                  # передан координатору
@@ -43,6 +44,10 @@ class Lead:
     flags: list[str] = field(default_factory=list)
     reject_reason: str = ""
     questions_asked: list[str] = field(default_factory=list)  # что спрашивал сам кандидат
+    offer: str = ""                # id подобранной программы из базы знаний
+    awaiting: str = ""             # поле, ответ на которое ждём прямо сейчас
+    followups: int = 0             # уточняющих вопросов задано на этапе предложения
+    applied_rules: set[str] = field(default_factory=set)  # сработавшие составные правила
     reminder_due_at: datetime | None = None
     reminder_sent: bool = False
     created_at: datetime = field(default_factory=datetime.now)
@@ -82,6 +87,7 @@ class Lead:
             "temperature": self.temperature.value,
             "score": self.score,
             **self.answers,
+            "offer": self.offer,
             "profile_percent": self.profile.percent,
             "profile_confirmed": "да" if self.profile.confirmed else "нет",
             # Менеджер должен видеть, какие поля посчитаны, а не названы:

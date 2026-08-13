@@ -23,6 +23,16 @@ class Profile:
     """Поля кандидата плюс отметки о том, что отложено и что подтверждено."""
 
     order: list[str] = field(default_factory=list)   # ключи в порядке по умолчанию
+    # Обязательные поля. Пустое множество означает «все обязательные» — так
+    # ведёт себя конфиг, в котором про required ничего не сказано.
+    required: set[str] = field(default_factory=set)
+    # Фаза, в которой поле спрашивают: выявление или закрытие. Поле без фазы
+    # относится к выявлению, поэтому конфиг без фаз работает как раньше.
+    phases: dict[str, str] = field(default_factory=dict)
+    # Поля, которые считаются из других полей. Они видны в карточке, но их
+    # никогда не спрашивают: спросить о том, что мы посчитали сами, — значит
+    # признать, что считать не умеем.
+    computed: set[str] = field(default_factory=set)
     values: dict[str, str] = field(default_factory=dict)
     derived: set[str] = field(default_factory=set)   # поля, посчитанные нами, а не названные
     notes: dict[str, str] = field(default_factory=dict)  # чем именно рискованно выведенное
@@ -86,18 +96,60 @@ class Profile:
     # Что спрашивать дальше
     # ------------------------------------------------------------------ #
 
-    def next_focus(self) -> str | None:
-        """Следующее поле для вопроса. Отложенные уходят в конец очереди."""
-        for key in self.order:
-            if not self.has(key) and key not in self.deferred:
+    DISCOVERY = "discovery"
+    CLOSING = "closing"
+
+    def is_required(self, key: str) -> bool:
+        """Пустой список обязательных означает «обязательны все»."""
+        if key in self.computed:
+            return False
+        return not self.required or key in self.required
+
+    def phase_of(self, key: str) -> str:
+        return self.phases.get(key, self.DISCOVERY)
+
+    def next_focus(self, phase: str | None = None) -> str | None:
+        """Следующее поле для вопроса. Отложенные уходят в конец очереди.
+
+        Обязательные спрашиваются раньше желательных: если человек уйдёт
+        на середине, у менеджера должно остаться то, без чего лид бесполезен.
+        `phase` ограничивает выбор одной фазой диалога — выявлением или
+        закрытием. Без фазы перебираются все поля, как было до деления.
+        """
+        def pool(required: bool, deferred: bool) -> str | None:
+            for key in self.order:
+                if self.has(key) or key in self.computed:
+                    continue
+                if phase is not None and self.phase_of(key) != phase:
+                    continue
+                if self.is_required(key) is not required:
+                    continue
+                if (key in self.deferred) is not deferred:
+                    continue
                 return key
-        for key in self.order:            # круг второй: возвращаемся к отложенным
-            if not self.has(key):
+            return None
+
+        for required, is_deferred in ((True, False), (False, False), (True, True), (False, True)):
+            key = pool(required, is_deferred)
+            if key:
                 return key
         return None
 
     def missing(self) -> list[str]:
-        return [key for key in self.order if not self.has(key)]
+        """Незаполненные обязательные поля. Желательные сюда не попадают.
+
+        Именно этот список решает, полон ли профайл и что показывать в «не
+        хватает вот чего». Желательное поле, которое человек не назвал, —
+        не пробел, а его право промолчать.
+        """
+        return [key for key in self.order if self.is_required(key) and not self.has(key)]
+
+    def missing_optional(self) -> list[str]:
+        return [
+            key
+            for key in self.order
+            if not self.is_required(key) and not self.has(key) and key not in self.computed
+        ]
 
     def is_complete(self) -> bool:
         return not self.missing()
@@ -132,6 +184,7 @@ class Profile:
                 if self.has(key)
             },
             "notes": dict(self.notes),
+            "required": [key for key in self.order if self.is_required(key)],
             "progress": {
                 "completed_fields": self.completed,
                 "total_fields": self.total,

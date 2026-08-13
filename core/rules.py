@@ -53,7 +53,12 @@ CORRECTION_MARKERS = (
 )
 
 
-def parse_answer(kind: str, text: str, options: list[str] | None = None) -> Parsed | None:
+def parse_answer(
+    kind: str,
+    text: str,
+    options=None,
+    ranges: dict | None = None,
+) -> Parsed | None:
     """Привести ответ к каноничному виду. None означает «не разобрала»."""
     text = text.strip()
     if not text:
@@ -68,6 +73,10 @@ def parse_answer(kind: str, text: str, options: list[str] | None = None) -> Pars
         value = _parse_phone(text)
     elif kind == "choice":
         value = _parse_choice(text, options or [])
+    elif kind == "scale":
+        value = _parse_scale(text, options or {}, ranges or {})
+    elif kind == "multi":
+        value = _parse_multi(text, options or {})
     else:
         value = text
     return Parsed(value) if value else None
@@ -148,6 +157,66 @@ def _parse_choice(text: str, options: list[str]) -> str | None:
     return None
 
 
+def _parse_scale(text: str, options: dict, ranges: dict | None = None) -> str | None:
+    """Одно значение из закрытой шкалы, названное живыми словами.
+
+    Тип `choice` сравнивает с самим значением и потому бесполезен там, где
+    человек не произносит канонику: «еле тянет» — это «слабый», «десятый» —
+    это «10». Синонимы живут в конфиге, кода про предметную область здесь нет.
+
+    Совпадения проверяются от самого длинного к самому короткому: иначе
+    «9 класс, хочу 90» отдаст классу «90», потому что оно нашлось раньше.
+    """
+    match = _match_scale(text, options, ranges)
+    return match[0] if match else None
+
+
+def _match_scale(text: str, options: dict, ranges: dict | None = None) -> tuple[str, str] | None:
+    """(значение, по какому фрагменту опознали) — фрагмент нужен, чтобы вырезать его.
+
+    `ranges` покрывает то, что синонимами не покрыть: балл называют любым
+    числом, и перечислять восемьдесят один, восемьдесят два бессмысленно.
+    Число весит больше слова: «хочу сдать на 85» — это про 85, а не про «сдать».
+    """
+    low = text.lower()
+
+    for value, bounds in (ranges or {}).items():
+        low_bound, high_bound = int(bounds[0]), int(bounds[1])
+        for raw in re.findall(r"(?<!\d)\d{1,3}(?!\d)", low):
+            if low_bound <= int(raw) <= high_bound:
+                return str(value), raw
+
+    best: tuple[str, str] | None = None
+    for value, synonyms in (options or {}).items():
+        for synonym in synonyms:
+            marker = str(synonym).lower()
+            # Чисто числовой маркер сравниваем по границам числа: иначе класс
+            # «9» находится внутри балла «90», и человек уезжает в девятый класс.
+            hit = (
+                re.search(rf"(?<!\d){re.escape(marker)}(?!\d)", low)
+                if marker.isdigit()
+                else (marker if marker in low else None)
+            )
+            if hit and (best is None or len(marker) > len(best[1])):
+                best = (str(value), marker)
+    return best
+
+
+def _parse_multi(text: str, options: dict) -> str | None:
+    """Несколько значений из закрытого перечня: «математика и физика».
+
+    Порядок ответа не сохраняем — берём порядок конфига, чтобы одинаковый
+    набор предметов всегда выглядел одинаково и в карточке, и в тестах.
+    """
+    low = text.lower()
+    found = [
+        str(value)
+        for value, synonyms in (options or {}).items()
+        if any(str(synonym).lower() in low for synonym in synonyms)
+    ]
+    return ", ".join(found) if found else None
+
+
 # --------------------------------------------------------------------- #
 # Сканирование свободной реплики
 # --------------------------------------------------------------------- #
@@ -195,6 +264,20 @@ def scan_fields(text: str, questions: list[dict]) -> dict[str, Parsed]:
         if value:
             found[key] = Parsed(value)
             rest = re.sub(value[: max(4, len(value) - 2)], " ", rest, flags=re.IGNORECASE)
+
+    # 2b. Шкалы и перечни — тоже закрытые списки, но опознаются по синонимам.
+    #     Идут в порядке конфига: класс раньше цели, иначе «9 класс, хочу 90»
+    #     отдаст классу цифру из балла.
+    for key, question in kinds.items():
+        if question["type"] == "scale":
+            match = _match_scale(rest, question.get("options") or {}, question.get("ranges") or {})
+            if match:
+                found[key] = Parsed(match[0])
+                rest = re.sub(re.escape(match[1]), " ", rest, flags=re.IGNORECASE)
+        elif question["type"] == "multi":
+            value = _parse_multi(rest, question.get("options") or {})
+            if value:
+                found[key] = Parsed(value)
 
     # 3. Возраст — сначала по явному маркеру, потом по одинокому числу в остатке.
     for key, question in kinds.items():
@@ -284,6 +367,130 @@ def check_rules(
             )
         return action, rule.get("message", "")
     return None, ""
+
+
+# --------------------------------------------------------------------- #
+# Вычисляемые поля
+# --------------------------------------------------------------------- #
+
+
+def compute_field(spec: dict, values: dict[str, str]) -> Parsed | None:
+    """Посчитать поле из другого поля профайла. None — не хватает исходных данных.
+
+    Такое значение человек не называл, поэтому оно всегда `derived`: в карточке
+    менеджера догадка обязана быть отличима от факта. Правило то же, что
+    с возрастом из года рождения, — только исходник берётся не из реплики,
+    а из уже собранного профайла.
+    """
+    source = values.get(spec["from"])
+    if not source:
+        return None
+
+    if spec.get("method") == "months_until":
+        months = _months_until(source, spec)
+        if months is None:
+            return None
+        note = spec.get("note", "").format(value=months, source=source)
+        return Parsed(str(months), derived=True, note=note)
+    return None
+
+
+def _months_until(source: str, spec: dict) -> int | None:
+    """Сколько полных месяцев осталось до события, привязанного к месяцу года.
+
+    Считаем от системной даты. Вписанный в код год начинает тихо врать
+    в новогоднюю ночь, и ни один тест этого не заметит — та же причина,
+    по которой границы года рождения считаются от `date.today()`.
+
+    `offset_years` говорит, сколько лет добавить к ближайшему наступающему
+    месяцу события: у выпускного класса это ноль, у предыдущего — год.
+    """
+    offsets = {str(key): int(value) for key, value in (spec.get("offset_years") or {}).items()}
+    if str(source) not in offsets:
+        return None
+
+    today = date.today()
+    month = int(spec.get("target_month", 6))
+    year = today.year if today.month < month else today.year + 1
+    target = date(year + offsets[str(source)], month, 1)
+
+    months = (target.year - today.year) * 12 + (target.month - today.month)
+    if today.day > 1:                     # текущий месяц уже начался — он не полный
+        months -= 1
+    return max(months, 0)
+
+
+# --------------------------------------------------------------------- #
+# Составные правила: смотрят на несколько полей сразу
+# --------------------------------------------------------------------- #
+
+
+def check_combined(rule: dict, values: dict[str, str]) -> tuple[str, str, str] | None:
+    """Правило по комбинации полей. Возвращает (action, текст клиенту, флаг).
+
+    Первое правило, которому одного поля мало. Здесь живёт главный сюжет
+    ниши: если срок и стартовый уровень не сходятся с заявленной целью, агент
+    не обещает результат. Он не отказывает и не закрывает диалог — он говорит
+    честно и оставляет решение человеку, а менеджеру отдаёт расчёт.
+
+    None означает «правило не сработало» — в том числе когда данных не хватает.
+    Молчание при неполных данных обязательно: обвинить цель в нереалистичности
+    по недостающему уровню было бы ровно тем враньём, от которого правило и есть.
+    """
+    if any(not values.get(key) for key in rule.get("needs", [])):
+        return None
+
+    scales = rule.get("scales", {})
+    try:
+        level = int(scales["level"][values[rule["level_field"]]])
+        goal = int(scales["goal"][values[rule["goal_field"]]])
+        left = int(values[rule["time_field"]])
+    except (KeyError, ValueError, TypeError):
+        return None
+
+    gap = goal - level
+    needed = gap * int(rule.get("months_per_step", 4))
+    if gap <= 0 or left >= needed:
+        return None
+
+    fill = {**values, "needed": needed, "gap": gap}
+    return (
+        rule.get("action", "no_promise"),
+        rule.get("message", "").format(**fill).strip(),
+        rule.get("flag", "").format(**fill).strip(),
+    )
+
+
+# --------------------------------------------------------------------- #
+# Подбор предложения
+# --------------------------------------------------------------------- #
+
+
+def pick_offer(values: dict[str, str], offer_rules: list[dict]) -> str:
+    """Выбрать, что предложить: первое подошедшее правило конфига.
+
+    Правила декларативные и живут в YAML — код не знает ни про курсы,
+    ни про классы. Возвращается id записи базы знаний: текст предложения
+    пишет заказчик, а не мы.
+    """
+    for rule in offer_rules or []:
+        if all(_matches(condition, values) for condition in rule.get("when", [])):
+            return rule.get("offer", "")
+    return ""
+
+
+def _matches(condition: dict, values: dict[str, str]) -> bool:
+    value = values.get(condition["field"])
+    if not value:
+        return False
+    if "in" in condition:
+        return value in [str(item) for item in condition["in"]]
+    if "less_than" in condition:
+        try:
+            return float(value) < float(condition["less_than"])
+        except ValueError:
+            return False
+    return False
 
 
 def _condition_met(rule: dict, value: str) -> bool:

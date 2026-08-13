@@ -61,6 +61,18 @@ class KnowledgeBase:
             return None, ""
         return best_entry["answer"].strip(), best_entry["id"]
 
+    def by_id(self, entry_id: str) -> str:
+        """Готовый текст записи по её id. Пусто — записи нет.
+
+        Нужно там, где ответ выбирает не человек словами, а правило конфига:
+        подобранная программа берётся из той же базы, что и ответы на вопросы,
+        чтобы условия не разъехались по двум местам.
+        """
+        for entry in self.entries:
+            if entry["id"] == entry_id:
+                return entry["answer"].strip()
+        return ""
+
     def _score(self, entry: dict, question: str) -> int:
         low = question.lower()
         score = 0
